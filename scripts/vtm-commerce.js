@@ -9,7 +9,8 @@
     email: 'nayakkamal068@gmail.com',
     address: 'Vrindavan, Mathura, Uttar Pradesh - 281121',
     upi: '9610746508-6@axl',
-    upiName: 'Kammu Nayak'
+    upiName: 'Kammu Nayak',
+    insta: 'https://www.instagram.com/invites/contact/?utm_content=fwhfrr5&exln=lr6c14c6yhx1'
   };
 
   /* ---------- helpers ---------- */
@@ -107,7 +108,26 @@
   function productFor(btn) { return btn.closest('.product-form') ? fromProductPage(btn) : fromCard(btn); }
 
   /* ---------- global click interception ---------- */
+  /* open WhatsApp reliably on every page (mobile app / desktop web) */
+  function openWA(url) {
+    if (isMobile()) { location.href = url; return; }
+    var w = null; try { w = window.open(url, '_blank', 'noopener'); } catch (e) {}
+    if (!w) location.href = url;
+  }
+  function goCheckout() { location.href = BASE + 'checkout.html'; }
   window.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href]');
+    if (a) {
+      var h = a.getAttribute('href') || '';
+      if (/^https?:\/\/(wa\.me|api\.whatsapp\.com|web\.whatsapp\.com|wa\.link)/i.test(h)) {
+        e.preventDefault(); e.stopImmediatePropagation(); openWA(h); return;
+      }
+      if (/^\/?(checkout|cart\/checkout)(\?|$|\/)/i.test(h) || /^https?:\/\/[^/]+\/checkout(\?|$|\/)/i.test(h)) {
+        e.preventDefault(); e.stopImmediatePropagation(); goCheckout(); return;
+      }
+    }
+    var ck = e.target.closest && e.target.closest('[name="checkout"], .cart__checkout-button, #CartDrawer-Checkout, #checkout');
+    if (ck) { e.preventDefault(); e.stopImmediatePropagation(); if (getCart().length) goCheckout(); else toast('Your cart is empty – please add a product first.'); return; }
     var cartLink = e.target.closest('#cart-icon-bubble');
     if (cartLink) { e.preventDefault(); e.stopImmediatePropagation(); location.href = BASE + 'pages/cart.html'; return; }
     var b = e.target.closest('button');
@@ -122,7 +142,14 @@
     else toast('Added to cart ✓', { href: BASE + 'pages/cart.html', text: 'View cart' });
   }, true);
   window.addEventListener('submit', function (e) {
-    if (/cart\/add/.test(e.target.getAttribute('action') || '')) { e.preventDefault(); e.stopImmediatePropagation(); }
+    var act = e.target.getAttribute ? e.target.getAttribute('action') : null;
+    if (act == null) return;
+    if (/cart\/add/.test(act)) { e.preventDefault(); e.stopImmediatePropagation(); return; }
+    /* static site: Shopify cart/checkout forms must never be submitted (gives "file couldn't be accessed") */
+    if (/(^|\/)(cart|checkout)(\.html)?(\?|$)/.test(act)) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (getCart().length) goCheckout(); else location.href = BASE + 'pages/cart.html';
+    }
   }, true);
 
   /* ---------- shared renderers ---------- */
@@ -161,7 +188,7 @@
   /* ---------- WhatsApp message ---------- */
   function waMessage(o) {
     var L = [];
-    L.push('*New Order – ' + CFG.brand + '*');
+    L.push('*✅ Order Placed – ' + CFG.brand + '*');
     L.push('Order ID: ' + o.id);
     L.push('Date: ' + o.date);
     L.push('');
@@ -183,8 +210,9 @@
     L.push('');
     L.push('*Payment*');
     L.push('Method: UPI (' + CFG.upi + ')');
-    L.push('Status: Paid – customer confirmed');
-    L.push('UPI Txn / UTR: ' + o.payment.utr);
+    L.push('Amount Paid: ' + inr(o.totals.total));
+    L.push('Status: Paid – confirmed by customer (please verify in PhonePe)');
+    L.push('UPI Txn / UTR: ' + (o.payment.utr || 'not provided'));
     return L.join('\n');
   }
   function waUrl(o) { return 'https://wa.me/' + CFG.wa + '?text=' + encodeURIComponent(waMessage(o)); }
@@ -258,48 +286,103 @@
   }
 
   /* ---------- PAYMENT PAGE ---------- */
+  var K_PAYSTART = 'vtm_pay_started';
+  function isMobile() { return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent)) || (window.matchMedia && matchMedia('(pointer:coarse)').matches && screen.width < 900); }
+  function isIOS() { return /iPhone|iPad|iPod/i.test(navigator.userAgent); }
+
   function renderPayment(root) {
     var cart = getCart(), draft = read(K_DRAFT, null);
     if (!cart.length || !draft) { root.innerHTML = empty('No order to pay for'); return; }
     var code = read(K_COUPON, ''), t = totals(cart, code);
-    var upiLink = 'upi://pay?pa=' + encodeURIComponent(CFG.upi).replace('%40', '@') + '&pn=' + encodeURIComponent(CFG.upiName) +
-      '&am=' + t.total.toFixed(2) + '&cu=INR&tn=' + encodeURIComponent('Order ' + draft.id);
+    var q = 'pa=' + CFG.upi + '&pn=' + encodeURIComponent(CFG.upiName) + '&am=' + t.total.toFixed(2) + '&cu=INR&tn=' + encodeURIComponent('Order ' + draft.id);
+    var q2 = q;
+    function intent(pkg) { return 'intent://pay?' + q2 + '#Intent;scheme=upi;' + (pkg ? 'package=' + pkg + ';' : '') + 'end'; }
+    var apps = isIOS() ? [
+      ['PhonePe', 'phonepe://pay?' + q, 'pp'],
+      ['Google Pay', 'gpay://upi/pay?' + q, 'gp'],
+      ['Paytm', 'paytmmp://pay?' + q, 'pt'],
+      ['Other UPI apps', 'upi://pay?' + q, 'ot']
+    ] : [
+      ['PhonePe', intent('com.phonepe.app'), 'pp'],
+      ['Google Pay', intent('com.google.android.apps.nbu.paisa.user'), 'gp'],
+      ['Paytm', intent('net.one97.paytm'), 'pt'],
+      ['Other UPI apps', intent(''), 'ot']
+    ];
+    var appHtml = isMobile()
+      ? '<a class="vtm-btn vtm-wide vtm-payupi" data-pay href="upi://pay?' + q + '">📱 Pay ' + inr(t.total) + ' with UPI App</a><p class="vtm-or">Tap to open PhonePe / Google Pay / Paytm / any UPI app with the amount already filled. Or pick an app:</p><div class="vtm-apps">' +
+        apps.map(function (a) { return '<a class="vtm-app vtm-app-' + a[2] + '" data-pay href="' + a[1] + '">' + a[0] + '</a>'; }).join('') + '</div>' +
+        '<p class="vtm-note">Pay in your app, then come back to this page – we will ask you to confirm.</p><p class="vtm-or">— or scan this QR from another phone —</p>'
+      : '<p class="vtm-note" style="margin:0 0 6px">On computer: scan this QR with any UPI app on your phone.</p>';
     root.innerHTML = '<h1>Pay with UPI</h1><div class="vtm-grid">' +
       '<section class="vtm-box vtm-paybox"><div class="vtm-amount">Amount to pay<b>' + inr(t.total) + '</b><small>Order ID: ' + esc(draft.id) + '</small></div>' +
-      '<h2>Step 1 – Make the payment</h2>' +
-      '<a class="vtm-btn vtm-wide vtm-upiapp" href="' + upiLink + '">Pay ' + inr(t.total) + ' with UPI app</a>' +
-      '<p class="vtm-or">— or scan this QR with any UPI app —</p>' +
+      '<h2>Step 1 – Make the payment</h2>' + appHtml +
       '<img class="vtm-qr" src="' + BASE + 'images/upi-qr.jpg" alt="PhonePe UPI QR code">' +
       '<p class="vtm-note">While paying, enter exactly <b>' + inr(t.total) + '</b>.</p>' +
       '<div class="vtm-upiid"><span>UPI ID</span><code id="vtm-upiid">' + CFG.upi + '</code><button type="button" id="vtm-copy" class="vtm-btn-sec">Copy</button></div>' +
       '<p class="vtm-note">Payee: ' + CFG.upiName + ' (' + CFG.brand + ')</p></section>' +
       '<aside class="vtm-box"><h2>Step 2 – Confirm your payment</h2>' +
-      '<p>After paying, enter the <b>UPI Transaction ID / UTR</b> shown in your payment app (usually 12 digits).</p>' +
-      '<label>UPI Transaction ID / UTR *<input id="vtm-utr" placeholder="e.g. 412345678901" autocomplete="off"></label>' +
+      '<p>After paying, tap the button below (or just come back to this page – we will ask automatically).</p>' +
+      '<label>UPI Transaction ID / UTR (optional)<input id="vtm-utr" placeholder="e.g. 412345678901" autocomplete="off"></label>' +
       '<p class="vtm-err" id="vtm-err"></p>' +
       '<button class="vtm-btn vtm-wide" id="vtm-place" type="button">I have paid – Place order</button>' +
-      '<p class="vtm-note">Your full order details will open in WhatsApp (+91 ' + CFG.phone + ') – just tap Send.</p>' +
+      '<p class="vtm-note">Your full order details will open in WhatsApp (+91 96107 46508) – just tap Send.</p>' +
       '<h2 class="vtm-mt">Order summary</h2>' + itemsHtml(cart, false) + totalsHtml(t) +
       '<a class="vtm-link" href="' + BASE + 'checkout.html">← Edit delivery details</a></aside></div>';
-    $('#vtm-copy').onclick = function () {
-      var b = this, done = function () { b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy'; }, 1800); };
-      if (navigator.clipboard) navigator.clipboard.writeText(CFG.upi).then(done, done); else done();
-    };
-    $('#vtm-place').onclick = function () {
-      var utr = clean($('#vtm-utr').value).toUpperCase();
-      if (!/^[A-Z0-9]{8,30}$/.test(utr)) { $('#vtm-err').textContent = 'Please enter a valid UPI Transaction ID / UTR from your payment app.'; return; }
+
+    function placeOrder(utr) {
       var d = new Date();
       var order = {
         id: draft.id,
         date: d.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
         customer: draft.customer, items: cart, totals: t,
-        payment: { method: 'UPI', upi: CFG.upi, utr: utr, status: 'Paid – customer confirmed' }
+        payment: { method: 'UPI', upi: CFG.upi, utr: utr || '', status: 'Paid – confirmed by customer' }
       };
       var orders = read(K_ORDERS, []); orders.push(order); write(K_ORDERS, orders); write(K_LAST, order);
-      del(K_CART); del(K_COUPON); del(K_DRAFT);
+      del(K_CART); del(K_COUPON); del(K_DRAFT); del(K_PAYSTART);
       try { window.open(waUrl(order), '_blank'); } catch (e) {}
       location.href = BASE + 'order-success.html';
+    }
+    function utrValue() {
+      var u = clean(($('#vtm-utr') || {}).value).toUpperCase();
+      if (u && !/^[A-Z0-9]{8,30}$/.test(u)) { var e = $('#vtm-err'); if (e) e.textContent = 'UTR looks invalid – clear it or enter the correct ID.'; return null; }
+      return u;
+    }
+    $('#vtm-copy').onclick = function () {
+      var b = this, done = function () { b.textContent = 'Copied ✓'; setTimeout(function () { b.textContent = 'Copy'; }, 1800); };
+      if (navigator.clipboard) navigator.clipboard.writeText(CFG.upi).then(done, done); else done();
     };
+    $('#vtm-place').onclick = function () { var u = utrValue(); if (u === null) return; placeOrder(u); };
+
+    /* remember that a UPI app was opened */
+    $$('[data-pay]', root).forEach(function (a) {
+      a.addEventListener('click', function () { write(K_PAYSTART, { id: draft.id, ts: Date.now() }); });
+    });
+
+    /* when the customer comes back from the UPI app, ask to confirm */
+    function showModal() {
+      if ($('#vtm-modal')) return;
+      var m = document.createElement('div'); m.id = 'vtm-modal';
+      m.innerHTML = '<div class="vtm-modal-box"><h2>Payment complete?</h2><p>Did you pay <b>' + inr(t.total) + '</b> to <b>' + CFG.upiName + '</b> successfully?</p>' +
+        '<label>UPI Transaction ID / UTR (optional)<input id="vtm-utr2" placeholder="12-digit ID from your app" autocomplete="off"></label>' +
+        '<button class="vtm-btn vtm-wide" id="vtm-yes" type="button">Yes, payment done – Place order</button>' +
+        '<button class="vtm-btn-sec vtm-wide" id="vtm-no" type="button">No, try again</button></div>';
+      document.body.appendChild(m);
+      $('#vtm-yes').onclick = function () {
+        var u = clean($('#vtm-utr2').value).toUpperCase();
+        if (u && !/^[A-Z0-9]{8,30}$/.test(u)) { $('#vtm-utr2').style.borderColor = '#c0392b'; return; }
+        placeOrder(u);
+      };
+      $('#vtm-no').onclick = function () { del(K_PAYSTART); m.remove(); };
+    }
+    function checkReturn() {
+      var f = read(K_PAYSTART, null);
+      if (!f || f.id !== draft.id || Date.now() - f.ts < 2500) return;
+      showModal();
+    }
+    document.addEventListener('visibilitychange', function () { if (!document.hidden) checkReturn(); });
+    window.addEventListener('pageshow', checkReturn);
+    window.addEventListener('focus', checkReturn);
+    checkReturn();
   }
 
   /* ---------- ORDER SUCCESS PAGE ---------- */
@@ -310,7 +393,7 @@
       '<p>Thank you, <b>' + esc(o.customer.name) + '</b>. Radhe Radhe 🙏</p>' +
       '<p class="vtm-oid">Order ID: <b>' + esc(o.id) + '</b></p></div>' +
       '<div class="vtm-grid"><section class="vtm-box"><h2>Order details</h2>' + itemsHtml(o.items, false) + totalsHtml(o.totals) +
-      '<p class="vtm-note">Payment: UPI • Txn ID ' + esc(o.payment.utr) + '</p></section>' +
+      '<p class="vtm-note">Payment: UPI • Txn ID ' + esc(o.payment.utr || 'not provided') + '</p></section>' +
       '<aside class="vtm-box"><h2>Delivery address</h2><p>' + esc(o.customer.name) + '<br>' + esc(o.customer.address) + '<br>' + esc(o.customer.city) + ', ' + esc(o.customer.state) + ' - ' + esc(o.customer.pin) + '<br>📞 ' + esc(o.customer.phone) + '</p>' +
       '<h2 class="vtm-mt">Send details on WhatsApp</h2><p>If WhatsApp did not open automatically, tap below and press <b>Send</b> so we receive your order.</p>' +
       '<a class="vtm-btn vtm-wa vtm-wide" target="_blank" rel="noopener" href="' + waUrl(o) + '">Send order on WhatsApp</a>' +
@@ -318,7 +401,16 @@
   }
 
   /* ---------- boot ---------- */
+  function waFloat() {
+    if ($('#vtm-wa-float')) return;
+    var a = document.createElement('a');
+    a.id = 'vtm-wa-float'; a.href = 'https://wa.me/' + CFG.wa + '?text=' + encodeURIComponent('Radhe Radhe'); a.target = '_blank'; a.rel = 'noopener';
+    a.setAttribute('aria-label', 'Chat on WhatsApp');
+    a.innerHTML = '<svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true"><path fill="#fff" d="M16.04 3C9.4 3 4.02 8.37 4.02 15c0 2.12.55 4.18 1.6 6L4 28l7.17-1.88A12 12 0 0 0 16.04 27C22.67 27 28.05 21.63 28.05 15S22.67 3 16.04 3zm0 21.98c-1.8 0-3.56-.49-5.1-1.4l-.37-.22-4.25 1.11 1.14-4.14-.24-.38A9.94 9.94 0 0 1 6.06 15c0-5.5 4.48-9.97 9.98-9.97S26.02 9.5 26.02 15s-4.48 9.98-9.98 9.98zm5.47-7.47c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.27-.47-2.42-1.49-.9-.8-1.5-1.78-1.67-2.08-.17-.3-.02-.46.13-.61.14-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.22 3.08c.15.2 2.1 3.2 5.08 4.49.71.31 1.26.49 1.7.63.71.23 1.36.2 1.87.12.57-.08 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z"/></svg>';
+    document.body.appendChild(a);
+  }
   function boot() {
+    waFloat();
     updateBubble();
     var map = { '[data-vtm-cart]': renderCart, '[data-vtm-checkout]': renderCheckout, '[data-vtm-payment]': renderPayment, '[data-vtm-success]': renderSuccess };
     Object.keys(map).forEach(function (sel) { var el = $(sel); if (el) map[sel](el); });
