@@ -17,7 +17,7 @@
   var script = document.currentScript || document.querySelector('script[src*="vtm-commerce.js"]');
   var BASE = script ? script.src.replace(/scripts\/vtm-commerce\.js.*$/, '') : './';
   var K_CART = 'vtm_cart_v1', K_COUPON = 'vtm_coupon', K_DRAFT = 'vtm_order_draft',
-      K_ORDERS = 'vtm_orders', K_LAST = 'vtm_last_order', K_CUST = 'vtm_customer';
+      K_ORDERS = 'vtm_orders', K_LAST = 'vtm_last_order', K_CUST = 'vtm_customer', K_ACTIVE = 'vtm_active_checkout_items';
 
   function read(k, d) { try { var v = JSON.parse(localStorage.getItem(k)); return v == null ? d : v; } catch (e) { return d; } }
   function write(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
@@ -30,6 +30,7 @@
   function $$(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
 
   function getCart() { var c = read(K_CART, []); return Array.isArray(c) ? c : []; }
+  function getCheckoutCart() { var active = read(K_ACTIVE, null); return Array.isArray(active) && active.length ? active : getCart(); }
   function saveCart(c) { write(K_CART, c); updateBubble(); }
   function count(c) { return (c || getCart()).reduce(function (s, i) { return s + i.qty; }, 0); }
 
@@ -108,26 +109,19 @@
   function productFor(btn) { return btn.closest('.product-form') ? fromProductPage(btn) : fromCard(btn); }
 
   /* ---------- global click interception ---------- */
-  /* open WhatsApp reliably on every page (mobile app / desktop web) */
-  function openWA(url) {
-    if (isMobile()) { location.href = url; return; }
-    var w = null; try { w = window.open(url, '_blank', 'noopener'); } catch (e) {}
-    if (!w) location.href = url;
-  }
+  /* WhatsApp links are intentionally handled by native anchor navigation (target=_blank).
+     This keeps the storefront open while WhatsApp opens in a separate tab/app. */
   function goCheckout() { location.href = BASE + 'checkout.html'; }
   window.addEventListener('click', function (e) {
     var a = e.target.closest && e.target.closest('a[href]');
     if (a) {
       var h = a.getAttribute('href') || '';
-      if (/^https?:\/\/(wa\.me|api\.whatsapp\.com|web\.whatsapp\.com|wa\.link)/i.test(h)) {
-        e.preventDefault(); e.stopImmediatePropagation(); openWA(h); return;
-      }
       if (/^\/?(checkout|cart\/checkout)(\?|$|\/)/i.test(h) || /^https?:\/\/[^/]+\/checkout(\?|$|\/)/i.test(h)) {
-        e.preventDefault(); e.stopImmediatePropagation(); goCheckout(); return;
+        e.preventDefault(); e.stopImmediatePropagation(); del(K_ACTIVE); goCheckout(); return;
       }
     }
     var ck = e.target.closest && e.target.closest('[name="checkout"], .cart__checkout-button, #CartDrawer-Checkout, #checkout');
-    if (ck) { e.preventDefault(); e.stopImmediatePropagation(); if (getCart().length) goCheckout(); else toast('Your cart is empty – please add a product first.'); return; }
+    if (ck) { e.preventDefault(); e.stopImmediatePropagation(); if (getCart().length) { del(K_ACTIVE); goCheckout(); } else toast('Your cart is empty – please add a product first.'); return; }
     var cartLink = e.target.closest('#cart-icon-bubble');
     if (cartLink) { e.preventDefault(); e.stopImmediatePropagation(); location.href = BASE + 'pages/cart.html'; return; }
     var b = e.target.closest('button');
@@ -137,9 +131,16 @@
     if (!isBuy && !isAdd) return;
     e.preventDefault(); e.stopImmediatePropagation();
     var p = productFor(b);
-    if (!addItem(p)) return;
-    if (isBuy) { location.href = BASE + 'checkout.html'; }
-    else toast('Added to cart ✓', { href: BASE + 'pages/cart.html', text: 'View cart' });
+    if (!p || !p.price) { toast('Sorry, could not identify this product. Please try again.'); return; }
+    if (isBuy) {
+      /* Buy Now is a single-product checkout; never mix in items already saved in the cart. */
+      write(K_ACTIVE, [p]);
+      location.href = BASE + 'checkout.html';
+    } else {
+      del(K_ACTIVE);
+      addItem(p);
+      toast('Added to cart ✓', { href: BASE + 'pages/cart.html', text: 'View cart' });
+    }
   }, true);
   window.addEventListener('submit', function (e) {
     var act = e.target.getAttribute ? e.target.getAttribute('action') : null;
@@ -148,7 +149,7 @@
     /* static site: Shopify cart/checkout forms must never be submitted (gives "file couldn't be accessed") */
     if (/(^|\/)(cart|checkout)(\.html)?(\?|$)/.test(act)) {
       e.preventDefault(); e.stopImmediatePropagation();
-      if (getCart().length) goCheckout(); else location.href = BASE + 'pages/cart.html';
+      if (getCart().length) { del(K_ACTIVE); goCheckout(); } else location.href = BASE + 'pages/cart.html';
     }
   }, true);
 
@@ -245,7 +246,7 @@
     return 'VTM' + String(d.getFullYear()).slice(2) + p(d.getMonth() + 1) + p(d.getDate()) + '-' + Math.floor(1000 + Math.random() * 9000);
   }
   function renderCheckout(root) {
-    var cart = getCart();
+    var cart = getCheckoutCart();
     if (!cart.length) { root.innerHTML = empty(); return; }
     var code = read(K_COUPON, ''), t = totals(cart, code), c = read(K_CUST, {});
     var states = STATES.map(function (s) { return '<option' + (c.state === s ? ' selected' : '') + '>' + s + '</option>'; }).join('');
@@ -291,7 +292,7 @@
   function isIOS() { return /iPhone|iPad|iPod/i.test(navigator.userAgent); }
 
   function renderPayment(root) {
-    var cart = getCart(), draft = read(K_DRAFT, null);
+    var cart = getCheckoutCart(), draft = read(K_DRAFT, null);
     if (!cart.length || !draft) { root.innerHTML = empty('No order to pay for'); return; }
     var code = read(K_COUPON, ''), t = totals(cart, code);
     var q = 'pa=' + CFG.upi + '&pn=' + encodeURIComponent(CFG.upiName) + '&am=' + t.total.toFixed(2) + '&cu=INR&tn=' + encodeURIComponent('Order ' + draft.id);
@@ -338,7 +339,8 @@
         payment: { method: 'UPI', upi: CFG.upi, utr: utr || '', status: 'Paid – confirmed by customer' }
       };
       var orders = read(K_ORDERS, []); orders.push(order); write(K_ORDERS, orders); write(K_LAST, order);
-      del(K_CART); del(K_COUPON); del(K_DRAFT); del(K_PAYSTART);
+      if (!read(K_ACTIVE, null)) del(K_CART);
+      del(K_ACTIVE); del(K_COUPON); del(K_DRAFT); del(K_PAYSTART);
       try { window.open(waUrl(order), '_blank'); } catch (e) {}
       location.href = BASE + 'order-success.html';
     }
@@ -404,7 +406,7 @@
   function waFloat() {
     if ($('#vtm-wa-float')) return;
     var a = document.createElement('a');
-    a.id = 'vtm-wa-float'; a.href = 'https://wa.me/' + CFG.wa + '?text=' + encodeURIComponent('Radhe Radhe'); a.target = '_blank'; a.rel = 'noopener';
+    a.id = 'vtm-wa-float'; a.href = 'https://api.whatsapp.com/send/?phone=' + CFG.wa + '&text=Radhe+Radhe&type=phone_number&app_absent=0'; a.target = '_blank'; a.rel = 'noopener noreferrer';
     a.setAttribute('aria-label', 'Chat on WhatsApp');
     a.innerHTML = '<svg viewBox="0 0 32 32" width="34" height="34" aria-hidden="true"><path fill="#fff" d="M16.04 3C9.4 3 4.02 8.37 4.02 15c0 2.12.55 4.18 1.6 6L4 28l7.17-1.88A12 12 0 0 0 16.04 27C22.67 27 28.05 21.63 28.05 15S22.67 3 16.04 3zm0 21.98c-1.8 0-3.56-.49-5.1-1.4l-.37-.22-4.25 1.11 1.14-4.14-.24-.38A9.94 9.94 0 0 1 6.06 15c0-5.5 4.48-9.97 9.98-9.97S26.02 9.5 26.02 15s-4.48 9.98-9.98 9.98zm5.47-7.47c-.3-.15-1.77-.87-2.04-.97-.27-.1-.47-.15-.67.15-.2.3-.77.97-.94 1.17-.17.2-.35.22-.65.07-.3-.15-1.27-.47-2.42-1.49-.9-.8-1.5-1.78-1.67-2.08-.17-.3-.02-.46.13-.61.14-.13.3-.35.45-.52.15-.17.2-.3.3-.5.1-.2.05-.37-.02-.52-.08-.15-.67-1.62-.92-2.22-.24-.58-.49-.5-.67-.51h-.57c-.2 0-.52.07-.8.37-.27.3-1.04 1.02-1.04 2.48s1.07 2.88 1.22 3.08c.15.2 2.1 3.2 5.08 4.49.71.31 1.26.49 1.7.63.71.23 1.36.2 1.87.12.57-.08 1.77-.72 2.02-1.42.25-.7.25-1.3.17-1.42-.07-.12-.27-.2-.57-.35z"/></svg>';
     document.body.appendChild(a);
